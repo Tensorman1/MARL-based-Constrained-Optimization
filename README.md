@@ -7,4 +7,4 @@ The repository will feature 4 programs -
 
 The programs here are general purpose, from the perspective of wirelss communications. The underpinning principles are drawn from mobile communications with an alignment towards frequency division multiple access schemes.
 This framework may get extended to problems beyond wireless communications but application-specific heuristic modifications apply.
-If you have used all or some part of this repository and found it useful, please follow cite the repository using the citation instruction in the "Citation.md" file.
+If you have used all or some part of this repository and found it useful, please consider citing the repository using the citation instruction in the "Citation.md" file.
