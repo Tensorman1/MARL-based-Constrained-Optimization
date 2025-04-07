@@ -1,0 +1,159 @@
+def visualize_network(env, maddpg=None, save_path='network_visualization.png'):
+    """
+    Visualization of the network with the thresholds
+    """
+    plt.figure(figsize=(20, 15))
+    
+    # Define thresholds for each metric
+    thresholds = {
+        'snr': env.MIN_SNR,           # Minimum acceptable SNR (dB)
+        'latency': env.MAX_LATENCY,   # Maximum acceptable latency (ms)
+        'throughput': 40.0,           # Minimum acceptable throughput (Mbps)
+        'power': env.MAX_POWER        # Maximum power limit (W)
+    }
+    
+    # Plot BS and user locations
+    plt.subplot(2, 2, 1)
+    
+    # First, determine the bounds of  visualization
+    all_coords_x = []
+    all_coords_y = []
+    
+    # Extract all x,y coordinates
+    for bs_idx in range(env.num_base_stations):
+        bs_x, bs_y = env.bs_locations[bs_idx]
+        all_coords_x.append(bs_x)
+        all_coords_y.append(bs_y)
+        
+        for user_idx in range(env.num_users_per_bs):
+            user_x, user_y = env.user_locations[bs_idx, user_idx]
+            all_coords_x.append(user_x)
+            all_coords_y.append(user_y)
+    
+    #  bounds with padding
+    min_x, max_x = min(all_coords_x), max(all_coords_x)
+    min_y, max_y = min(all_coords_y), max(all_coords_y)
+    
+    # Extra padding for each side
+    padding_x = (max_x - min_x) * 0.05
+    padding_y = (max_y - min_y) * 0.05
+    
+    # Plot with all base stations and users
+    for bs_idx in range(env.num_base_stations):
+        bs_x, bs_y = env.bs_locations[bs_idx]
+        plt.scatter(bs_x, bs_y, color='red', s=200, marker='^', 
+                   label='Base Station' if bs_idx == 0 else "", zorder=10)
+        
+        # Draw boundary with the circles
+        cell_radius = env.grid_size / (2 * np.sqrt(env.num_base_stations))
+        circle = plt.Circle((bs_x, bs_y), cell_radius, fill=False, color='red', alpha=0.3)
+        plt.gca().add_patch(circle)
+        
+        #  BS number label
+        plt.text(bs_x, bs_y+15, f"BS {bs_idx+1}", fontsize=9, ha='center', 
+                bbox=dict(facecolor='white', alpha=0.8, boxstyle='round,pad=0.3'))
+        
+        for user_idx in range(env.num_users_per_bs):
+            user_x, user_y = env.user_locations[bs_idx, user_idx]
+            plt.scatter(user_x, user_y, color='blue', s=30, alpha=0.5, 
+                       label='User' if bs_idx == 0 and user_idx == 0 else "", zorder=5)
+    
+    plt.xlim(min_x - padding_x, max_x + padding_x)
+    plt.ylim(min_y - padding_y, max_y + padding_y)
+    plt.title('Network Topology')
+    plt.xlabel('X Position (m)')
+    plt.ylabel('Y Position (m)')
+    plt.legend(loc='upper right')
+    plt.grid(True, alpha=0.3)
+    
+    # If maddpg is provided, run a simulation and plot metrics
+    if maddpg:
+        states = env.reset()
+        metrics = {'power': [], 'snr': [], 'latency': [], 'throughput': []}
+        
+        for step in range(env.max_steps):
+            actions = maddpg.act(states, episode=1000, add_noise=False)
+            next_states, _, done, _ = env.step(actions)
+            
+            metrics['power'].append(env.current_power)
+            metrics['snr'].append(env.current_snr)
+            metrics['latency'].append(env.current_latency)
+            metrics['throughput'].append(env.current_throughput)
+            
+            states = next_states
+            if done:
+                break
+        
+        # Plot power allocations
+        plt.subplot(2, 2, 2)
+        power_data = np.array(metrics['power'])
+        
+        # Create shaded regions for threshold visualization
+        plt.axhspan(0, thresholds['power'], alpha=0.2, color='green', label='Acceptable')
+        plt.axhspan(thresholds['power'], max(power_data.max()*1.1, thresholds['power']*1.2), 
+                  alpha=0.2, color='red', label='Above maximum')
+        
+        # Plot power data for each BS
+        for bs_idx in range(min(env.num_base_stations, 10)):  # Showing all the base stations used
+            plt.plot(power_data[:, bs_idx], label=f'BS {bs_idx+1}')
+        
+        # Threshold Line
+        plt.axhline(y=thresholds['power'], color='purple', linestyle='--', 
+                   linewidth=2, label=f'Max Power ({thresholds["power"]}W)')
+        
+        plt.xlabel('Step')
+        plt.ylabel('Transmit Power (W)')
+        plt.title('Power Allocation over Time')
+        plt.legend(loc='best')
+        plt.grid(True, alpha=0.3)
+        
+        # SNR
+        plt.subplot(2, 2, 3)
+        snr_data = np.array(metrics['snr'])
+        
+
+        plt.axhspan(0, thresholds['snr'], alpha=0.2, color='red', label='Below minimum')
+        plt.axhspan(thresholds['snr'], max(snr_data.max()*1.1, thresholds['snr']*2), 
+                  alpha=0.2, color='green', label='Acceptable')
+        
+        #  SNR data for each BS
+        for bs_idx in range(min(env.num_base_stations, 10)):
+            plt.plot(snr_data[:, bs_idx], label=f'BS {bs_idx+1}')
+
+        plt.axhline(y=thresholds['snr'], color='purple', linestyle='--', 
+                   linewidth=2, label=f'Min SNR ({thresholds["snr"]}dB)')
+        
+        plt.xlabel('Step')
+        plt.ylabel('SNR (dB)')
+        plt.title('Signal-to-Noise Ratio over Time')
+        plt.legend(loc='best')
+        plt.grid(True, alpha=0.3)
+        
+        # Throughput
+        plt.subplot(2, 2, 4)
+        throughput_data = np.array(metrics['throughput'])
+        
+
+        plt.axhspan(0, thresholds['throughput'], alpha=0.2, color='red', label='Below minimum')
+        plt.axhspan(thresholds['throughput'], max(throughput_data.max()*1.1, thresholds['throughput']*2), 
+                  alpha=0.2, color='green', label='Acceptable')
+        
+        # Throughput data for each base station
+        for bs_idx in range(min(env.num_base_stations, 10)):
+            plt.plot(throughput_data[:, bs_idx], label=f'BS {bs_idx+1}')
+
+
+        plt.axhline(y=thresholds['throughput'], color='purple', linestyle='--', 
+                   linewidth=2, label=f'Min Throughput ({thresholds["throughput"]}Mbps)')
+        
+        plt.xlabel('Step')
+        plt.ylabel('Throughput (Mbps)')
+        plt.title('Throughput over Time')
+        plt.legend(loc='best')
+        plt.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+    
+    print(f"Network visualization saved to {save_path}")
