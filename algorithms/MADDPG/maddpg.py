@@ -249,8 +249,3 @@ class MADDPG:
 
     def noise_decay(self, episode):
         return max(0.05, self.NOISE_DECAY ** episode)
-
-"""The following lines will set-up the large network environment with 10 base stattions.
-"Large" is a quite a relative word. WRT the previous implementations with 3 agents,
-this is large.
-"""
