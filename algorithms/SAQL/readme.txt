@@ -1,4 +1,3 @@
-"""
 This is the implementation of Single-Agent Q-Learning for Network Resource Optimization under constraints for a small network (3 agents).
 
 ChatGPT-4o was used for the network topology and radar plots. However, where there were errors, especially in the radar chart
@@ -10,4 +9,3 @@ to be useful, please consider citing the repository as a hyperlink for now until
 Things to Note - The run time depends on the compute resources available. This was evaluated using a humble Ryzen 5 processor with
 no GPU. The program was run for 250 episodes for maintaining standardization with the MADDPG programs. Results obtained from this for the network resource             management problem might benefit from running more          episodes or increasing the neighbourhood size, or running more training smaples per-episode. 
 Application-specific heuristic modifications apply for other adaptations.
-    """
