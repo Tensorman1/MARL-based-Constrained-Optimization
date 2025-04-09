@@ -1,5 +1,6 @@
 """
-This is the implementation of Multi-Agent Deep Deterministic Policy Gradients for Network Resource Optimization under constraints
+This is the implementation of Multi-Agent Deep Deterministic Policy Gradients for Network Resource Optimization under constraints. 
+This version provides the framework for the large network case.
 The core princples have been derived from - Lowe et. al, "Multi-Agent Actor-Critic for Mixed Cooperative-Competitive Environments."
 Link to the GitHub repository - https://github.com/openai/maddpg/tree/master".
 
