@@ -76,4 +76,4 @@ def plot_radar_chart(results, save_path='radar_chart.png'):
     plt.savefig(save_path)
     plt.close()
     
-    print(f"Radar chart saved to {save_path}")
+    print(f"Saved to {save_path}")
