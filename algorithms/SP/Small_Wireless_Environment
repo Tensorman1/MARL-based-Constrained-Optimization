@@ -1,3 +1,8 @@
+""" The following is the small wireless network implementation for Stochastic Programming. 
+Most of the contents here are similar to the MADDPG_small class. However, there are a few
+SP-specific changes which have been made here
+"""
+
 class SmallWirelessNetworkEnv:
     def __init__(self, num_base_stations=3, num_users_per_bs=5, grid_size=500):
         self.num_base_stations = num_base_stations
