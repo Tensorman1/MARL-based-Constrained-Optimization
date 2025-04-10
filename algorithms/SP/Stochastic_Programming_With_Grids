@@ -1,0 +1,283 @@
+# Stochastic Programming Implementation
+class StochasticProgramming:
+    def __init__(self, env, power_levels=10, bandwidth_patterns=5):
+        self.env = env
+        self.power_levels = power_levels
+        self.bandwidth_patterns = bandwidth_patterns
+        
+        # Power options in actual watts (match MADDPG range)
+        self.power_options = np.linspace(0, self.env.MAX_POWER, power_levels)
+        
+        # Bandwidth allocation patterns
+        self.bandwidth_options = [
+            # Equal allocation
+            np.ones(env.num_users_per_bs) / env.num_users_per_bs,
+            # Prioritizing first users
+            np.array([0.4, 0.3, 0.15, 0.1, 0.05]),
+            # Prioritizing middle users
+            np.array([0.1, 0.25, 0.3, 0.25, 0.1]),
+            # Prioritizing last users
+            np.array([0.05, 0.1, 0.15, 0.3, 0.4]),
+            # This will provide the highest priority to first user
+            np.array([0.6, 0.2, 0.1, 0.05, 0.05])
+        ]
+        
+        # Best solution
+        self.best_decision = None
+        self.best_utility = -float('inf')
+        
+        # Performance metrics tracking (same structure as MADDPG)
+        self.metrics_history = {
+            'rewards': [],
+            'snr': [],
+            'latency': [],
+            'throughput': [],
+            'power': [],
+            'fairness': [],
+            'constraint_violations': {
+                'power_violation': [],
+                'snr_violation': []
+            }
+        }
+    
+    def generate_candidates(self, num_candidate=200):
+        # All possible combinations of power settings
+        power_combinations = list(itertools.product(self.power_options, repeat=self.env.num_base_stations))
+        
+        # All possible combinations of bandwidth allocation patterns
+        bandwidth_combinations = list(itertools.product(range(len(self.bandwidth_options)), repeat=self.env.num_base_stations))
+        
+        # Joint candidates
+        candidates = []
+        
+        random.seed(42)  # For reproducibility
+        total_candidates = len(power_combinations) * len(bandwidth_combinations)
+        if total_candidates > num_candidate:
+            for _ in range(num_candidate):
+                # Random selection of a power combination
+                power_combo = random.choice(power_combinations)
+                # Random selection of a bandwidth pattern combination
+                bandwidth_combo = random.choice(bandwidth_combinations)
+                
+                # candidate decision
+                candidate = []
+                for i in range(self.env.num_base_stations):
+                    power = power_combo[i]
+                    bandwidth_pattern = self.bandwidth_options[bandwidth_combo[i]]
+                    candidate.append((power, bandwidth_pattern))
+                
+                candidates.append(candidate)
+        else:
+            # If there are fewer candidates than requested, generate systematically
+            for power_combo in power_combinations:
+                for bandwidth_combo in bandwidth_combinations:
+                    # Candidate decision
+                    candidate = []
+                    for i in range(self.env.num_base_stations):
+                        power = power_combo[i]
+                        bandwidth_pattern = self.bandwidth_options[bandwidth_combo[i]]
+                        candidate.append((power, bandwidth_pattern))
+                    
+                    candidates.append(candidate)
+                    
+                    # Break if the desired candidate number has been reached
+                    if len(candidates) >= num_candidate:
+                        break
+                
+                if len(candidates) >= num_candidate:
+                    break
+        
+        return candidates
+    
+    def evaluate_candidate(self, decision, num_samples=100):
+        """
+        In this function, a candidate decision has been evaluated across multiple channel realizations
+        
+        Parameters -
+            decision: List of (power, bandwidth_pattern) tuples, one per base station
+            num_samples: Number of random channel realizations to test
+            
+        This will return -
+            metrics: Dictionary of performance metrics averaged over samples
+        """
+        # Metrics
+        rewards = []
+        snr_values = []
+        latency_values = []
+        throughput_values = []
+        fairness_values = []
+        power_values = []
+        power_violations = 0
+        snr_violations = 0
+        
+        # Decision formatting for the environment
+        # decision is a list of (power, bandwidth_pattern) tuples
+        powers = [d[0] for d in decision]
+        bandwidth_patterns = [d[1] for d in decision]
+        
+        # Action array formatting 
+        # Shape: [num_base_stations, 1+num_users_per_bs]
+        actions = []
+        for i in range(self.env.num_base_stations):
+            bs_action = np.concatenate(([powers[i]], bandwidth_patterns[i]))
+            actions.append(bs_action)
+        
+        actions = np.array(actions)
+
+        for _ in range(num_samples):
+            # Environment is reset 
+            self.env.reset()
+            _, rewards_sample, _, info = self.env.step(actions)
+            mean_reward = np.mean(rewards_sample)
+            rewards.append(mean_reward)
+            snr_values.append(info['snr'])
+            latency_values.append(info['latency'])
+            throughput_values.append(info['throughput'])
+            fairness_values.append(info['fairness'])
+            power_values.append(info['power'])
+            
+            # Constraint violations
+            if info['constraint_violations']['power_violation']:
+                power_violations += 1
+            if info['constraint_violations']['snr_violation']:
+                snr_violations += 1
+        
+        # Averages 
+        metrics = {
+            'avg_reward': np.mean(rewards),
+            'avg_snr': np.mean(snr_values),
+            'avg_latency': np.mean(latency_values),
+            'avg_throughput': np.mean(throughput_values),
+            'avg_fairness': np.mean(fairness_values),
+            'avg_power': np.mean(power_values),
+            'power_violation_prob': power_violations / num_samples,
+            'snr_violation_prob': snr_violations / num_samples
+        }
+        
+        return metrics
+    
+    def grid_search(self, num_candidate=200, num_samples=100, chance_constraint_threshold=0.10):
+        """
+        Stochastic grid search with chance constraints
+        
+        Parameters -
+            num_candidate: Number of candidate decisions to evaluate
+            num_samples: Number of random samples per candidate
+            chance_constraint_threshold: Maximum allowed probability of constraint violation
+            
+        Returns -
+            best_decision: The decision with highest Expected utility
+            best_utility: The expected utility of the Best Decision
+            candidate_results: List of (candidate, metrics, adjusted_utility) tuples
+            search_time: Time taken for the grid search
+        """
+        start_time = time.time()
+        
+        print(f"Generating {num_candidate} candidate decisions...")
+        candidates = self.generate_candidates(num_candidate)
+        
+        print(f"Evaluating candidates over {num_samples} samples each.,.")
+        candidate_results = []
+        
+        # TBest solution may be tracked based on utility minus constraint penalties
+        best_decision = None
+        best_utility = -float('inf')
+        
+        # Evaluation of each candidate 
+        for i, candidate in enumerate(candidates):
+            if (i+1) % 10 == 0:
+                print(f"Evaluated {i+1}/{len(candidates)} candidates")
+                
+            metrics = self.evaluate_candidate(candidate, num_samples)
+            
+            # Penalties for constraint violations
+            power_penalty = 1.0 if metrics['power_violation_prob'] > chance_constraint_threshold else 0.0
+            snr_penalty = 1.0 if metrics['snr_violation_prob'] > chance_constraint_threshold else 0.0
+            
+            # Adjusted utility includes penalties
+            adjusted_utility = metrics['avg_reward'] - power_penalty - snr_penalty
+            
+            candidate_results.append((candidate, metrics, adjusted_utility))
+            
+            # Update best solution if this is better
+            if adjusted_utility > best_utility:
+                best_utility = adjusted_utility
+                best_decision = candidate
+        
+        # Best decision stored for later use
+        self.best_decision = best_decision
+        self.best_utility = best_utility
+        
+        search_time = time.time() - start_time
+        
+        return best_decision, best_utility, candidate_results, search_time
+    
+    def simulate_episodes(self, num_episodes=250):
+        """
+        The best decision now must be simulated multiple times to collect the required metrics.
+        
+        Parameters -
+            num_episodes: Number of episodes to simulate
+            
+        Returns -
+            metrics: Dictionary with performance metrics
+        """
+        # Metric history reset
+        for key in self.metrics_history:
+            if key != 'constraint_violations':
+                self.metrics_history[key] = []
+        self.metrics_history['constraint_violations']['power_violation'] = []
+        self.metrics_history['constraint_violations']['snr_violation'] = []
+        
+    
+        powers = [d[0] for d in self.best_decision]
+        bandwidth_patterns = [d[1] for d in self.best_decision]
+        actions = []
+        for i in range(self.env.num_base_stations):
+            bs_action = np.concatenate(([powers[i]], bandwidth_patterns[i]))
+            actions.append(bs_action)
+        
+        actions = np.array(actions)
+        
+        episode_durations = []
+        
+        # Running episodes
+        for episode in range(num_episodes):
+            episode_start = time.time()
+            
+            # Reset environment
+            self.env.reset()
+            
+            # Here the best decision has been applied and the results have been noted down for later use/visualization.
+            _, rewards, _, info = self.env.step(actions)
+            
+            # Recorded metrics
+            self.metrics_history['rewards'].append(np.mean(rewards))
+            self.metrics_history['snr'].append(info['snr'])
+            self.metrics_history['latency'].append(info['latency'])
+            self.metrics_history['throughput'].append(info['throughput'])
+            self.metrics_history['power'].append(info['power'])
+            self.metrics_history['fairness'].append(info['fairness'])
+            self.metrics_history['constraint_violations']['power_violation'].append(
+                info['constraint_violations']['power_violation'])
+            self.metrics_history['constraint_violations']['snr_violation'].append(
+                info['constraint_violations']['snr_violation'])
+            
+            episode_end = time.time()
+            episode_durations.append(episode_end - episode_start)
+            
+            # Progress
+            if (episode + 1) % 10 == 0:
+                print(f"Episode {episode+1}/{num_episodes}")
+                print(f"  Avg Reward: {self.metrics_history['rewards'][-1]:.2f}")
+                print(f"  Avg SNR: {self.metrics_history['snr'][-1]:.2f} dB")
+                print(f"  Avg Latency: {self.metrics_history['latency'][-1]:.2f} ms")
+                print(f"  Avg Throughput: {self.metrics_history['throughput'][-1]:.2f} Mbps")
+                print(f"  Avg Power: {self.metrics_history['power'][-1]:.2f} W")
+                print(f"  Avg Fairness: {self.metrics_history['fairness'][-1]:.2f}")
+                print(f"  Avg Duration: {np.mean(episode_durations[-10:]):.2f}s")
+        
+        # Episode durations to metrics
+        self.metrics_history['episode_duration'] = episode_durations
+        
+        return self.metrics_history
