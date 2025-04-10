@@ -1,0 +1,72 @@
+def plot_pareto_frontier(candidate_results, save_path='pareto_frontier_sp.png'):
+    """
+    This excerpt will plot the approximated Pareto frontier to show multi-objective tradeoffs
+    """
+    # metrics
+    utilities = []
+    throughputs = []
+    power_usage = []
+    fairness = []
+    snr = []
+    latency = []
+    constraint_violations = []
+    
+    for candidate, metrics, adj_utility in candidate_results:
+        utilities.append(metrics['avg_reward'])
+        throughputs.append(metrics['avg_throughput'])
+        power_usage.append(metrics['avg_power'])
+        fairness.append(metrics['avg_fairness'])
+        snr.append(metrics['avg_snr'])
+        latency.append(metrics['avg_latency'])
+        constraint_violations.append(max(metrics['power_violation_prob'], metrics['snr_violation_prob']))
+    
+    # Here, non-dominated solutions (simple Pareto frontier approximation) have been searched for
+    # A solution is non-dominated if no other solution is better in all objectives
+    is_pareto = np.ones(len(utilities), dtype=bool)
+    
+    for i in range(len(utilities)):
+        for j in range(len(utilities)):
+            if i != j:
+                # Check if j dominates i
+                if (utilities[j] >= utilities[i] and 
+                    throughputs[j] >= throughputs[i] and 
+                    fairness[j] >= fairness[i] and 
+                    power_usage[j] <= power_usage[i] and
+                    constraint_violations[j] <= constraint_violations[i]):
+                    
+                    # If at least one objective is strictly better, j dominates i
+                    if (utilities[j] > utilities[i] or 
+                        throughputs[j] > throughputs[i] or 
+                        fairness[j] > fairness[i] or 
+                        power_usage[j] < power_usage[i] or
+                        constraint_violations[j] < constraint_violations[i]):
+                        
+                        is_pareto[i] = False
+                        break
+    
+    # figure for throughput vs power vs fairness
+    plt.figure(figsize=(12, 10))
+    
+    # Solutions color-coded by constraint violations
+    plt.scatter(throughputs, power_usage, c=constraint_violations, cmap='coolwarm', 
+               alpha=0.5, label='All Solutions', s=50)
+    
+    # Pareto-Optimal Solutions
+    plt.scatter(np.array(throughputs)[is_pareto], np.array(power_usage)[is_pareto], 
+               color='green', s=100, marker='*', label='Pareto-Optimal')
+    
+    # Solution with highest utility
+    best_idx = np.argmax(utilities)
+    plt.scatter(throughputs[best_idx], power_usage[best_idx], 
+               color='red', s=150, marker='X', label='Candidate solution with the highest Utility')
+    
+    plt.colorbar(label='Constraint Violation Probability')
+    plt.xlabel('Throughput (Mbps)')
+    plt.ylabel('Power Consumption (W)')
+    plt.title('Pareto Frontier: Throughput vs Power')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
