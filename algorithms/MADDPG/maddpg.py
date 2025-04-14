@@ -66,7 +66,7 @@ class OUNoise:
 """This is the implementation of MADDPG"""
 class MADDPG:
     def __init__(self, num_agents, local_state_dim, action_dim, neighborhood_size=3):
-        # Hyperparameters (modify as requried)
+        # Hyperparameters (modify as requried for the specific adaptatio)
         self.LR_ACTOR = 5e-5
         self.LR_CRITIC = 1e-4
         self.GAMMA = 0.99
