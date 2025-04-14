@@ -1,0 +1,66 @@
+# Evaluation Function
+def evaluate(agent, env, num_episodes=10):
+    print("Evaluation has started")
+    
+    # Metrics tracking
+    evaluation_metrics = {
+        'rewards': [],
+        'snr': [],
+        'latency': [],
+        'throughput': [],
+        'power': [],
+        'fairness': []
+    }
+    
+    for episode in range(num_episodes):
+        state = env.reset()
+        episode_reward = 0
+        step_count = 0
+        
+        while True:
+            # Action chosen without any exploration here
+            action = np.argmax(agent.Q[state])
+            
+            # action
+            next_state, reward, done, _ = env.step(action)
+            
+            # cumulative reward
+            episode_reward += reward
+            step_count += 1
+            state = next_state
+            
+            if done:
+                break
+        
+        # episode metrics
+        episode_metrics = env.get_episode_metrics()
+        
+        # evaluation metrics have been updated here
+        evaluation_metrics['rewards'].append(episode_reward / step_count)
+        evaluation_metrics['snr'].append(episode_metrics['snr'])
+        evaluation_metrics['latency'].append(episode_metrics['latency'])
+        evaluation_metrics['throughput'].append(episode_metrics['throughput'])
+        evaluation_metrics['power'].append(episode_metrics['power'])
+        evaluation_metrics['fairness'].append(episode_metrics['fairness'])
+        
+        print(f"Evaluation Episode {episode+1}/{num_episodes}, Reward: {evaluation_metrics['rewards'][-1]:.2f}")
+    
+    # Compilation of Results
+    results = {
+        'rewards': np.mean(evaluation_metrics['rewards']),
+        'snr': np.mean(evaluation_metrics['snr']),
+        'latency': np.mean(evaluation_metrics['latency']),
+        'throughput': np.mean(evaluation_metrics['throughput']),
+        'power': np.mean(evaluation_metrics['power']),
+        'fairness': np.mean(evaluation_metrics['fairness'])
+    }
+    
+    print(f"Evaluation complete")
+    print(f"Average reward: {results['rewards']:.2f}")
+    print(f"Average SNR: {results['snr']:.2f} dB")
+    print(f"Average latency: {results['latency']:.2f} ms")
+    print(f"Average throughput: {results['throughput']:.2f} Mbps")
+    print(f"Average power: {results['power']:.2f} W")
+    print(f"Average fairness: {results['fairness']:.2f}")
+    
+    return results, evaluation_metrics
