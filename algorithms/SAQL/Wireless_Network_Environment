@@ -1,0 +1,404 @@
+"""
+The SmallWirelessNetworkEnv has been modified to suit the MADDPG_Small, SP, and this - SAQL implementation. But some model-specific 
+changes apply - for example, SAQL involves discrete state-action spaces.
+"""
+class SmallWirelessNetworkEnv:
+    def __init__(self, num_base_stations=3, num_users_per_bs=5, grid_size=500):
+        self.num_base_stations = num_base_stations
+        self.num_users_per_bs = num_users_per_bs
+        self.total_users = num_base_stations * num_users_per_bs
+        self.grid_size = grid_size
+        
+    
+        self.MAX_POWER = 50  # in Watts
+        self.MIN_SNR = 10    # in dB
+        self.MAX_LATENCY = 100  # in ms
+        self.PATHLOSS_EXPONENT = 3.5 # This metric has not got any associated units
+        self.BANDWIDTH = 20  # in MHz
+        self.NOISE_FLOOR = -100  # in dBm
+        
+        self.max_steps = 100
+        self.current_step = 0
+        self.done = False
+        self._initialize_locations()
+        
+        
+        # Network state parameters
+        self.channel_gains = None
+        self.user_demands = None
+        self.current_power = np.zeros(num_base_stations)
+        self.current_snr = np.zeros(num_base_stations)
+        self.current_latency = np.zeros(num_base_stations)
+        self.current_throughput = np.zeros(num_base_stations)
+        self.current_interference = np.zeros((num_base_stations, num_users_per_bs))
+        
+        # Per-episode metrics
+        self.episode_metrics = {
+            'snr': [],
+            'latency': [],
+            'throughput': [],
+            'power': [],
+            'fairness': [],
+            'rewards': []
+        }
+        
+        # Discrete power levels and bandwidth levels for the agent's actions - This is important.
+        self.n_power_levels = 5
+        self.n_bandwidth_levels = 5
+        
+        # Current settings for all the base stations shown in the network topology plot.
+        self.power_settings = np.ones(num_base_stations) * (self.MAX_POWER / (2 * num_base_stations))  # Start at mid power
+        self.bandwidth_settings = np.ones((num_base_stations, num_users_per_bs)) / num_users_per_bs  # Equal allocation
+        
+    def _initialize_locations(self):
+        bs_spacing = self.grid_size / np.sqrt(self.num_base_stations)
+        grid_dim = int(np.ceil(np.sqrt(self.num_base_stations)))
+        
+        self.bs_locations = []
+        for i in range(grid_dim):
+            for j in range(grid_dim):
+                if len(self.bs_locations) < self.num_base_stations:
+                    x = i * bs_spacing + np.random.uniform(-bs_spacing/4, bs_spacing/4)
+                    y = j * bs_spacing + np.random.uniform(-bs_spacing/4, bs_spacing/4)
+                    self.bs_locations.append((x, y))
+        
+        # Intialization of user locations - this is supposed to get reset 
+        self.user_locations = np.zeros((self.num_base_stations, self.num_users_per_bs, 2))
+        
+    def _calculate_channel_gains(self):
+        """Channel gains based are calculated using distance and shadowing - same as MADDPG small network"""
+        gains = np.zeros((self.num_base_stations, self.num_base_stations, self.num_users_per_bs))
+        
+        for bs_idx in range(self.num_base_stations):
+            bs_x, bs_y = self.bs_locations[bs_idx]
+            
+            for user_bs_idx in range(self.num_base_stations):
+                for user_idx in range(self.num_users_per_bs):
+                    user_x, user_y = self.user_locations[user_bs_idx, user_idx]
+                    
+                    # Distance
+                    distance = np.sqrt((bs_x - user_x)**2 + (bs_y - user_y)**2)
+                    # Minimum distance to avoid infinite gain - another option here is to add a small constant
+                    distance = max(distance, 1)
+                    
+                    # Path loss (dB) = 10 * n * log10(d) where n is path loss exponent
+                    path_loss_db = 10 * self.PATHLOSS_EXPONENT * np.log10(distance)
+                    
+                    # shadow fading (log-normal distribution)
+                    shadow_fading_db = np.random.normal(0, 8)  # 8 dB standard deviation
+                    
+                    # This has been calculated in Decibels
+                    total_loss_db = path_loss_db + shadow_fading_db
+                    
+                    # Linear scale gain
+                    gain = 10 ** (-total_loss_db / 10)
+                    gains[bs_idx, user_bs_idx, user_idx] = gain
+        
+        return gains
+
+     # Reset every epsiode after having completed the per-episode (100) training steps.   
+    def reset(self):
+        self.current_step = 0
+        self.done = False
+        
+        for key in self.episode_metrics:
+            self.episode_metrics[key] = []
+        
+        # Random user locations for each BS
+        for bs_idx in range(self.num_base_stations):
+            bs_x, bs_y = self.bs_locations[bs_idx]
+            # USers have been distributed within cell radius
+            cell_radius = self.grid_size / (2 * np.sqrt(self.num_base_stations))
+            
+            for user_idx in range(self.num_users_per_bs):
+                # Random angle and distance from BS
+                angle = np.random.uniform(0, 2 * np.pi)
+                distance = np.random.uniform(0, cell_radius)
+                
+                # Cartesian coordinates
+                user_x = bs_x + distance * np.cos(angle)
+                user_y = bs_y + distance * np.sin(angle)
+                
+                # Ensure that this lies within the grid boundaries
+                user_x = np.clip(user_x, 0, self.grid_size)
+                user_y = np.clip(user_y, 0, self.grid_size)
+                
+                self.user_locations[bs_idx, user_idx] = [user_x, user_y]
+        
+        # Channel gains (these are now based on locations)
+        self.channel_gains = self._calculate_channel_gains()
+        
+        # Yser demands between 0 and 1 - GENERATED randomly
+        self.user_demands = np.random.uniform(0, 1, (self.num_base_stations, self.num_users_per_bs))
+        
+        # Metrics
+        self.current_power = np.zeros(self.num_base_stations)
+        self.current_snr = np.ones(self.num_base_stations) * self.MIN_SNR
+        self.current_latency = np.ones(self.num_base_stations) * self.MAX_LATENCY
+        self.current_throughput = np.zeros(self.num_base_stations)
+        self.current_interference = np.zeros((self.num_base_stations, self.num_users_per_bs))
+        
+        # Reset power and bandwidth settings
+        self.power_settings = np.ones(self.num_base_stations) * (self.MAX_POWER / (2 * self.num_base_stations))
+        self.bandwidth_settings = np.ones((self.num_base_stations, self.num_users_per_bs)) / self.num_users_per_bs
+        
+        # State for SAQL agent
+        return self._get_state()
+        
+    def _get_state(self):
+        """
+        Creates a discretized state representation for the Q-learning agent,
+        but based on the same state information used in MADDPG to maintain standardization in comparison
+        """
+        # In the following lines of code, the important metrics have been extracted.
+        
+        # 1. Discretization of channel gains (3 levels)
+        all_channel_gains = self.channel_gains.flatten()
+        low_gains = np.sum(all_channel_gains < 0.0001)
+        medium_gains = np.sum((all_channel_gains >= 0.0001) & (all_channel_gains < 0.001))
+        high_gains = np.sum(all_channel_gains >= 0.001)
+        channel_gains_state = (low_gains, medium_gains, high_gains)
+        
+        # 2. Discretization of interference (3 levels)
+        all_interference = self.current_interference.flatten()
+        low_interference = np.sum(all_interference < 0.1)
+        medium_interference = np.sum((all_interference >= 0.1) & (all_interference < 1.0))
+        high_interference = np.sum(all_interference >= 1.0)
+        interference_state = (low_interference, medium_interference, high_interference)
+        
+        # 3. Discretization of user demands (3 levels)
+        all_demands = self.user_demands.flatten()
+        low_demands = np.sum(all_demands < 0.3)
+        medium_demands = np.sum((all_demands >= 0.3) & (all_demands < 0.7))
+        high_demands = np.sum(all_demands >= 0.7)
+        demands_state = (low_demands, medium_demands, high_demands)
+        
+        # 4. Discretization of Power levels (5 levels)
+        avg_power = np.mean(self.current_power)
+        power_level = min(4, int(avg_power / (self.MAX_POWER / 5)))
+        
+        # 5. Discretization of SNR levels (5 levels) - Note SNR/SINR have been used interchangeable although they are not alike.
+        avg_snr = np.mean(self.current_snr)
+        snr_level = min(4, max(0, int((avg_snr - self.MIN_SNR) / ((40 - self.MIN_SNR) / 5))))
+        
+        # 6. latency discretization (5 levels)
+        avg_latency = np.mean(self.current_latency)
+        latency_level = min(4, max(0, int((self.MAX_LATENCY - avg_latency) / ((self.MAX_LATENCY - 5) / 5))))
+        
+        # 7. Discretization of Throughput (5 levels)
+        avg_throughput = np.mean(self.current_throughput)
+        throughput_level = min(4, max(0, int(avg_throughput / (100 / 5))))
+        
+        # State tuple which combines all the discretized metrics
+        state = (
+            channel_gains_state,
+            interference_state,
+            demands_state,
+            power_level,
+            snr_level,
+            latency_level,
+            throughput_level
+        )
+        
+        return state
+
+    def step(self, action):
+        """
+        This functions allows the agents to take a step in the synthetic environment.
+        
+        Action space (for 3 BS, 5 users per BS):
+        - 0-14: Power adjustment for each BS (5 levels for each of 3 BS)
+        - 15+: Bandwidth allocation adjustment (5 patterns for each BS)
+        
+        This will return the - next_state, reward, done, info
+        """
+        self.current_step += 1
+        self.done = self.current_step >= self.max_steps
+        
+        # Action Decoding
+        if action < self.num_base_stations * self.n_power_levels:  # Power adjustment
+            bs_idx = action // self.n_power_levels
+            power_level = action % self.n_power_levels
+            
+            # Discrete power level mapped onto actual value
+            self.power_settings[bs_idx] = (power_level + 0.5) * (self.MAX_POWER / self.n_power_levels)
+            
+        else:  # Bandwidth allocation pattern
+            pattern_idx = action - (self.num_base_stations * self.n_power_levels)
+            bs_idx = pattern_idx // self.n_bandwidth_levels
+            pattern = pattern_idx % self.n_bandwidth_levels
+            
+            # Different bandwidth allocation patterns
+            if bs_idx < self.num_base_stations:
+                if pattern == 0:  # Equal allocation
+                    self.bandwidth_settings[bs_idx] = np.ones(self.num_users_per_bs) / self.num_users_per_bs
+                elif pattern == 1:  # Prioritization of first users
+                    self.bandwidth_settings[bs_idx] = np.array([0.4, 0.3, 0.15, 0.1, 0.05])
+                elif pattern == 2:  # Prioritization of middle users
+                    self.bandwidth_settings[bs_idx] = np.array([0.1, 0.25, 0.3, 0.25, 0.1])
+                elif pattern == 3:  # Prioritization of last users
+                    self.bandwidth_settings[bs_idx] = np.array([0.05, 0.1, 0.15, 0.3, 0.4])
+                elif pattern == 4:  # Extreme priority to first user 
+                    self.bandwidth_settings[bs_idx] = np.array([0.6, 0.2, 0.1, 0.05, 0.05])
+        
+
+        # In MADDPG, the programs written have used-actions shape is (num_base_stations, 2) where
+        # actions[:, 0] = power allocation [-1, 1] (will be scaled to [0, MAX_POWER])
+        # actions[:, 1] = bandwidth allocation parameter
+        
+        #Power_Setting to MADDPG format (scaled between -1 and 1)
+        power_actions = 2 * (self.power_settings / self.MAX_POWER) - 1
+        
+        # For bandwidth,  a single parameter that will be processed with softmax
+        # Just using a placeholder that will result in approximately the desired distribution
+        bandwidth_actions = np.zeros((self.num_base_stations, 1))
+        
+        # actions format
+        actions = np.column_stack((power_actions, bandwidth_actions))
+        
+        #  SINR for each user
+        sinr = np.zeros((self.num_base_stations, self.num_users_per_bs))
+        
+        # power allocations (scaled from [-1,1] to [0,MAX_POWER])
+        power_allocations = np.clip(0.5 * (actions[:, 0] + 1), 0, 1) * self.MAX_POWER
+        self.current_power = power_allocations
+        
+        for bs_idx in range(self.num_base_stations):
+            for user_idx in range(self.num_users_per_bs):
+                # Signal power from serving BS
+                signal_power = power_allocations[bs_idx] * self.channel_gains[bs_idx, bs_idx, user_idx]
+                
+                # Interference power from other BSs
+                interference_power = 0
+                for interfering_bs in range(self.num_base_stations):
+                    if interfering_bs != bs_idx:
+                        interference_power += power_allocations[interfering_bs] * self.channel_gains[interfering_bs, bs_idx, user_idx]
+                
+                # thermal noise (convert noise floor from dBm to linear)
+                noise_power = 10 ** (self.NOISE_FLOOR / 10) / 1000  # Convert to watts
+                
+                # SINR
+                if signal_power > 0:
+                    sinr[bs_idx, user_idx] = signal_power / (interference_power + noise_power)
+                else:
+                    sinr[bs_idx, user_idx] = 0
+                    
+                # interference for state representation
+                self.current_interference[bs_idx, user_idx] = interference_power
+        
+        # throughput using Shannon's formula
+        throughput = np.zeros((self.num_base_stations, self.num_users_per_bs))
+        for bs_idx in range(self.num_base_stations):
+            for user_idx in range(self.num_users_per_bs):
+                # Shannon capacity: B * log2(1 + SINR)
+                if sinr[bs_idx, user_idx] > 0:
+                    throughput[bs_idx, user_idx] = (
+                        self.BANDWIDTH * 1e6 * self.bandwidth_settings[bs_idx, user_idx] * 
+                        np.log2(1 + sinr[bs_idx, user_idx])
+                    ) / 1e6  # Convert to Mbps
+        
+        #  metrics per BS
+        fairness_values = []
+        for bs_idx in range(self.num_base_stations):
+            # Average SNR in dB
+            if np.any(sinr[bs_idx] > 0):
+                self.current_snr[bs_idx] = 10 * np.log10(np.mean(sinr[bs_idx]))
+            else:
+                self.current_snr[bs_idx] = self.MIN_SNR
+            
+            # Total throughput
+            self.current_throughput[bs_idx] = np.sum(throughput[bs_idx])
+            
+            # Latency (inversely proportional to throughput, higher throughput = lower latency)
+            demands_weighted_throughput = np.sum(self.user_demands[bs_idx] * throughput[bs_idx])
+            if demands_weighted_throughput > 0:
+                self.current_latency[bs_idx] = self.MAX_LATENCY * np.exp(-0.1 * demands_weighted_throughput)
+            else:
+                self.current_latency[bs_idx] = self.MAX_LATENCY
+                
+            # fairness for this BS
+            fairness = self._jains_fairness(throughput[bs_idx])
+            fairness_values.append(fairness)
+        
+        # rewards - same as MADDPG
+        rewards = []
+        for bs_idx in range(self.num_base_stations):
+            reward = self._calculate_reward(bs_idx, sinr[bs_idx], throughput[bs_idx])
+            rewards.append(reward)
+        
+        # average reward across all BSs
+        reward = np.mean(rewards)
+        
+        # per-step metrics for this episode
+        self.episode_metrics['snr'].append(np.mean(self.current_snr))
+        self.episode_metrics['latency'].append(np.mean(self.current_latency))
+        self.episode_metrics['throughput'].append(np.mean(self.current_throughput))
+        self.episode_metrics['power'].append(np.mean(self.current_power))
+        self.episode_metrics['fairness'].append(np.mean(fairness_values))
+        self.episode_metrics['rewards'].append(reward)
+        
+        # next state for the agent
+        next_state = self._get_state()
+        
+        # Additional info for logging
+        info = {
+            'snr': np.mean(self.current_snr),
+            'latency': np.mean(self.current_latency),
+            'throughput': np.mean(self.current_throughput),
+            'power': np.mean(self.current_power),
+            'fairness': np.mean(fairness_values),
+            'reward': reward
+        }
+        
+        return next_state, reward, self.done, info
+
+    def _calculate_reward(self, bs_idx, sinr_values, throughput_values):
+        """reward for a single base station - same as MADDPG small network"""
+        # Normalize metrics to [0,1] range
+        snr_norm = (self.current_snr[bs_idx] - self.MIN_SNR) / (40 - self.MIN_SNR)
+        snr_norm = np.clip(snr_norm, 0, 1)
+        
+        latency_norm = (self.MAX_LATENCY - self.current_latency[bs_idx]) / (self.MAX_LATENCY - 5)
+        latency_norm = np.clip(latency_norm, 0, 1)
+        
+        throughput_norm = np.clip(self.current_throughput[bs_idx] / 100, 0, 1)
+        
+        #  fairness among users
+        fairness = self._jains_fairness(throughput_values)
+        
+        # penalties
+        power_penalty = 0
+        snr_penalty = 0
+        
+        # Power consumption penalty if exceeding limit
+        if self.current_power[bs_idx] > self.MAX_POWER:
+            power_penalty = 10 * (self.current_power[bs_idx] - self.MAX_POWER) / self.MAX_POWER
+        
+        # SNR penalty if below minimum
+        if self.current_snr[bs_idx] < self.MIN_SNR:
+            snr_penalty = 5 * (self.MIN_SNR - self.current_snr[bs_idx]) / self.MIN_SNR
+        
+        # Reward components with weights
+        reward = (0.3 * snr_norm + 
+                  0.25 * latency_norm + 
+                  0.25 * throughput_norm + 
+                  0.2 * fairness - 
+                  power_penalty - 
+                  snr_penalty)
+        
+        return reward
+    
+    def _jains_fairness(self, rates):
+        """Calculated using the Jain formula for Global Fairness"""
+        if np.sum(rates) == 0:
+            return 0
+        return (np.sum(rates) ** 2) / (self.num_users_per_bs * np.sum(rates ** 2) + 1e-8)
+    
+    def get_episode_metrics(self):
+        episode_avg_metrics = {}
+        for key in self.episode_metrics:
+            if len(self.episode_metrics[key]) > 0:
+                episode_avg_metrics[key] = np.mean(self.episode_metrics[key])
+            else:
+                episode_avg_metrics[key] = 0
+        return episode_avg_metrics
